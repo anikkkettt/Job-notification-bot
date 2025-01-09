@@ -1,6 +1,9 @@
 import requests
 import time
 import asyncio
+import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 from telegram import Bot
 from telegram.ext import Application
 
@@ -87,5 +90,24 @@ async def main():
             await asyncio.sleep(60)  # Use asyncio.sleep for non-blocking behavior
 
 
+# HTTP server for health checks
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+
+def run_health_check_server():
+    port = int(os.getenv("PORT", 8000))  # Default to port 8000 if no PORT env variable is set
+    server = HTTPServer(("", port), HealthCheckHandler)
+    print(f"Health check server running on port {port}")
+    server.serve_forever()
+
+
 if __name__ == "__main__":
+    # Start the health check server in a separate thread
+    Thread(target=run_health_check_server, daemon=True).start()
+
+    # Run the Telegram bot
     asyncio.run(main())
