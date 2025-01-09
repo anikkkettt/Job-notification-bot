@@ -1,5 +1,4 @@
 import requests
-import time
 import asyncio
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -70,24 +69,36 @@ async def main():
     while True:
         try:
             jobs = fetch_jobs()
-            if jobs and (last_sent_job_id is None or jobs[0]["id"] != last_sent_job_id):
-                for job in jobs:
-                    # Check and skip jobs where experience is more than 0
+            if jobs:
+                # Get the newest job
+                newest_job = jobs[0]
+                
+                # Check if this job has already been sent
+                if newest_job["id"] != last_sent_job_id:
+                    # Skip jobs with experience > 0
                     try:
-                        experience_value = int(job["experience"]["experience"]) if job["experience"] else 0
+                        experience_value = int(newest_job["experience"]["experience"]) if newest_job["experience"] else 0
                         if experience_value > 0:
+                            print(f"Skipping job {newest_job['id']} due to experience > 0.")
+                            await asyncio.sleep(60)
                             continue
                     except ValueError:
-                        print(f"Invalid experience value for job ID {job['id']}: {job['experience']}")
+                        print(f"Invalid experience value for job ID {newest_job['id']}: {newest_job['experience']}")
+                        await asyncio.sleep(60)
                         continue
-                    message = format_message(job)
-                    await send_message(message)  # Await the send message function
-                    last_sent_job_id = job["id"]
-                    break  # Only send the newest job
-            await asyncio.sleep(60)  # Use asyncio.sleep instead of time.sleep
+
+                    # Send the message
+                    message = format_message(newest_job)
+                    await send_message(message)
+
+                    # Update the last sent job ID
+                    last_sent_job_id = newest_job["id"]
+                else:
+                    print("No new jobs found.")
+            await asyncio.sleep(60)  # Check every 60 seconds
         except Exception as e:
             print("Error:", e)
-            await asyncio.sleep(60)  # Use asyncio.sleep for non-blocking behavior
+            await asyncio.sleep(60)
 
 
 # HTTP server for health checks
