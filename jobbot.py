@@ -9,10 +9,10 @@ GROUP_CHAT_ID = "-4707697711"
 API_URL = "https://ap-south-1.cdn.hygraph.com/content/clyfggcvi02yv07uxmtl5gva8/master"
 CHECK_INTERVAL = 60  # How often to check for new jobs (in seconds)
 
-# Our GraphQL query to fetch jobs
+# GraphQL query to fetch jobs
 QUERY = """
 query JobPosts {
-  jobPosts(orderBy: createdAt_DESC, first: 1000) {
+  jobPosts(orderBy: createdAt_DESC, first: 100) {
     id
     title
     slug
@@ -28,7 +28,6 @@ query JobPosts {
   }
 }
 """
-
 
 class JobBot:
     def __init__(self):
@@ -57,9 +56,7 @@ class JobBot:
 
     def format_message(self, job):
         """Format the job information into a Telegram message"""
-        # Add warning emojis for internship positions
         prefix = "🚨🚨🚨🚨🚨🚨🚨🚨" if job["jobTypeReference"]["jobType"].lower() == "internship" else ""
-
         return f"""{prefix}
 <b>{job['title']}</b>
 
@@ -118,20 +115,14 @@ class JobBot:
         if not jobs:
             return
 
-        # Sort jobs by creation time to ensure proper ordering
-        jobs.sort(key=lambda x: x["createdAt"], reverse=True)
-
-        # Update our timestamp to the newest job's time
-        if jobs:
-            self.last_job_time = jobs[0]["createdAt"]
-
-        # Process each job
         processed_count = 0
         for job in jobs:
             if self.should_process_job(job):
                 message = self.format_message(job)
                 if await self.send_message(message):
                     processed_count += 1
+                    # Update last_job_time only after successfully processing the job
+                    self.last_job_time = job["createdAt"]
                 await asyncio.sleep(1)  # Prevent hitting rate limits
 
         if processed_count > 0:
@@ -149,12 +140,10 @@ class JobBot:
                 print(f"Error in main loop: {e}")
                 await asyncio.sleep(CHECK_INTERVAL)
 
-
 async def main():
     """Main function to run the bot"""
     bot = JobBot()
     await bot.run()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
