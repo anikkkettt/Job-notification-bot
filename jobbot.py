@@ -1,20 +1,15 @@
-import requests
 import asyncio
-import os
-import json
+import requests
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Thread
 from telegram import Bot
-from telegram.ext import Application
 
-# Configuration
+# Configuration settings for our bot
 TELEGRAM_BOT_TOKEN = "7829379039:AAGNg5C2smnmJOWFGJSLaNFcuiZmH7fyjEQ"
 GROUP_CHAT_ID = "-4707697711"
 API_URL = "https://ap-south-1.cdn.hygraph.com/content/clyfggcvi02yv07uxmtl5gva8/master"
-CHECK_INTERVAL = 60  # Seconds between API checks
+CHECK_INTERVAL = 60  # How often to check for new jobs (in seconds)
 
-# GraphQL query
+# Our GraphQL query to fetch jobs
 QUERY = """
 query JobPosts {
   jobPosts(orderBy: createdAt_DESC, first: 1000) {
@@ -35,32 +30,16 @@ query JobPosts {
 """
 
 
-class JobState:
-    """Manages the state of processed jobs"""
-
-    def __init__(self):
-        self.processed_jobs = set()
-        self.last_check_time = None
-
-    def is_job_processed(self, job_id):
-        return job_id in self.processed_jobs
-
-    def mark_job_processed(self, job_id):
-        self.processed_jobs.add(job_id)
-
-    def update_check_time(self):
-        self.last_check_time = datetime.now(timezone.utc)
-
-
 class JobBot:
-    def __init__(self, token, chat_id):
-        self.application = Application.builder().token(token).build()
-        self.bot = self.application.bot
-        self.chat_id = chat_id
-        self.state = JobState()
+    def __init__(self):
+        # Initialize our bot with the Telegram token
+        self.bot = Bot(TELEGRAM_BOT_TOKEN)
+        # Store the timestamp of the most recent job we've seen
+        self.last_job_time = None
+        print(f"Bot initialized at {datetime.now(timezone.utc)}")
 
     def fetch_jobs(self):
-        """Fetch jobs from the API with error handling"""
+        """Fetch jobs from the GraphQL API"""
         try:
             response = requests.post(
                 API_URL,
@@ -69,14 +48,18 @@ class JobBot:
                 timeout=30
             )
             response.raise_for_status()
-            return response.json().get("data", {}).get("jobPosts", [])
-        except requests.exceptions.RequestException as e:
+            jobs = response.json().get("data", {}).get("jobPosts", [])
+            print(f"Fetched {len(jobs)} jobs at {datetime.now(timezone.utc)}")
+            return jobs
+        except Exception as e:
             print(f"Error fetching jobs: {e}")
             return []
 
     def format_message(self, job):
-        """Format job information into a message"""
+        """Format the job information into a Telegram message"""
+        # Add warning emojis for internship positions
         prefix = "🚨🚨🚨🚨🚨🚨🚨🚨" if job["jobTypeReference"]["jobType"].lower() == "internship" else ""
+
         return f"""{prefix}
 <b>{job['title']}</b>
 
@@ -87,50 +70,72 @@ class JobBot:
 <i>Description Link:</i> jobfound.org/job/{job['slug']}
 
 <i>Apply Link:</i> {job['apply']}
-"""
+
+<i>Posted:</i> {job['createdAt']}"""
+
+    def is_new_job(self, job_time_str):
+        """Check if a job is newer than the last job we've seen"""
+        if not self.last_job_time:
+            return True
+
+        job_time = datetime.fromisoformat(job_time_str.replace('Z', '+00:00'))
+        last_time = datetime.fromisoformat(self.last_job_time.replace('Z', '+00:00'))
+        return job_time > last_time
 
     async def send_message(self, message):
-        """Send message with error handling"""
+        """Send a message to the Telegram group"""
         try:
             await self.bot.send_message(
-                chat_id=self.chat_id,
+                chat_id=GROUP_CHAT_ID,
                 text=message,
                 parse_mode="HTML",
                 disable_web_page_preview=True
             )
+            print(f"Message sent successfully at {datetime.now(timezone.utc)}")
             return True
         except Exception as e:
             print(f"Error sending message: {e}")
             return False
 
     def should_process_job(self, job):
-        """Determine if a job should be processed"""
-        # Skip if already processed
-        if self.state.is_job_processed(job["id"]):
+        """Determine if we should process and send this job"""
+        # Check if it's a new job
+        if not self.is_new_job(job["createdAt"]):
             return False
 
-        # Check experience requirement
+        # Check if the experience requirement is 0
         try:
             experience = job.get("experience", {}).get("experience", "0")
             experience_value = int(experience) if experience else 0
             return experience_value == 0
         except (ValueError, TypeError):
-            print(f"Invalid experience value for job {job['id']}: {experience}")
+            print(f"Invalid experience value for job {job['id']}")
             return False
 
     async def process_jobs(self):
-        """Process new jobs and send messages"""
+        """Process all jobs and send messages for new ones"""
         jobs = self.fetch_jobs()
         if not jobs:
             return
 
+        # Sort jobs by creation time to ensure proper ordering
+        jobs.sort(key=lambda x: x["createdAt"], reverse=True)
+
+        # Update our timestamp to the newest job's time
+        if jobs:
+            self.last_job_time = jobs[0]["createdAt"]
+
+        # Process each job
+        processed_count = 0
         for job in jobs:
             if self.should_process_job(job):
                 message = self.format_message(job)
                 if await self.send_message(message):
-                    self.state.mark_job_processed(job["id"])
-                    print(f"Sent message for job {job['id']}")
-                await asyncio.sleep(1)  # Avoid hitting rate limits
+                    processed_count += 1
+                await asyncio.sleep(1)  # Prevent hitting rate limits
+
+        if processed_count > 0:
+            print(f"Processed {processed_count} new jobs")
 
     async def run(self):
         """Main bot loop"""
@@ -138,41 +143,17 @@ class JobBot:
         while True:
             try:
                 await self.process_jobs()
-                self.state.update_check_time()
+                print(f"Sleeping for {CHECK_INTERVAL} seconds")
                 await asyncio.sleep(CHECK_INTERVAL)
             except Exception as e:
                 print(f"Error in main loop: {e}")
                 await asyncio.sleep(CHECK_INTERVAL)
 
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        response = {
-            "status": "running",
-            "timestamp": datetime.now().isoformat()
-        }
-        self.wfile.write(json.dumps(response).encode())
-
-
-def run_health_check_server(port):
-    server = HTTPServer(("", port), HealthCheckHandler)
-    print(f"Health check server running on port {port}")
-    server.serve_forever()
-
-
 async def main():
-    # Initialize and run the bot
-    job_bot = JobBot(TELEGRAM_BOT_TOKEN, GROUP_CHAT_ID)
-
-    # Start health check server
-    port = int(os.getenv("PORT", 8000))
-    Thread(target=run_health_check_server, args=(port,), daemon=True).start()
-
-    # Run the bot
-    await job_bot.run()
+    """Main function to run the bot"""
+    bot = JobBot()
+    await bot.run()
 
 
 if __name__ == "__main__":
